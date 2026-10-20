@@ -163,7 +163,7 @@ export default function ClassroomPage({ classroom, onBack }) {
               }}
             />
           )}
-          {activeTab === "classwork" && <ClassworkBoard />}
+          {activeTab === "classwork" && <ClassworkBoard classId={classroom?.id || "cls_1"} />}
       {activeTab === "community" && <DiscussionRooms classId={classroom?.id || "cls_1"} />}
         </div>
       </main>
