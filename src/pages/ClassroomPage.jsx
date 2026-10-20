@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { ArrowLeft, Share2, ChevronUp, ChevronDown, Video } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { ArrowLeft, Share2, ChevronUp, ChevronDown, Video, UserCheck, Users } from "lucide-react";
 import MultiMediaStage from "../components/classroom/PresentationStage/MultiMediaStage";
 import TeacherMediaToolbar from "../components/classroom/PresentationStage/TeacherMediaToolbar";
 import ScrollingGrid from "../components/classroom/WebGrid/ScrollingGrid";
@@ -9,20 +9,20 @@ import LiveQnA from "../components/classroom/WorkspaceTabs/LiveQnA";
 import PreviousLectures from "../components/classroom/WorkspaceTabs/PreviousLectures";
 import ClassworkBoard from "../components/classroom/WorkspaceTabs/ClassworkBoard";
 import DiscussionRooms from "../components/classroom/WorkspaceTabs/DiscussionRooms";
+import AttendanceModal from "../components/classroom/AttendanceModal";
 import { useAuth } from "../context/AuthContext";
 import { supabase } from "../services/supabaseClient";
 
 export default function ClassroomPage({ classroom, onBack }) {
   const { user } = useAuth();
+  const isTeacher = user?.role === "teacher";
 
-  // MultiMedia Stage State
+  // Stage & Media State
   const [stageMode, setStageMode] = useState("youtube");
   const [contentUrl, setContentUrl] = useState("https://www.youtube.com/watch?v=jfKfPfyJRdk");
   const [noticeText, setNoticeText] = useState("");
   const [isLive, setIsLive] = useState(classroom?.isLive || false);
   const [isStageCollapsed, setIsStageCollapsed] = useState(false);
-
-  // WebCam Video Grid Collapsible State
   const [isVideoGridCollapsed, setIsVideoGridCollapsed] = useState(false);
 
   // AV State
@@ -30,6 +30,11 @@ export default function ClassroomPage({ classroom, onBack }) {
   const [isCamOn, setIsCamOn] = useState(false);
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [areAllMuted, setAreAllMuted] = useState(false);
+
+  // Attendance & Presence State
+  const [attendanceModalOpen, setAttendanceModalOpen] = useState(false);
+  const [attendanceLogs, setAttendanceLogs] = useState([]);
+  const [liveAttendeesCount, setLiveAttendeesCount] = useState(1);
 
   // Active Workspace Tab
   const [activeTab, setActiveTab] = useState("live-qna");
@@ -40,29 +45,83 @@ export default function ClassroomPage({ classroom, onBack }) {
     { id: "p3", name: user?.name || "You", avatar: user?.avatar, isCameraOn: isCamOn, isMuted: !isMicOn, isHandRaised: isHandRaised, isSelf: true },
   ]);
 
- const handleUpdateContent = async (url, notice = "") => {
-  if (url) setContentUrl(url);
-  if (notice) setNoticeText(notice);
+  // Record Attendance & Setup Presence Channel
+  useEffect(() => {
+    if (!classroom?.id || !user) return;
 
-  // Sync to Supabase in background for all students
-  if (user?.role === "teacher" && classroom?.id) {
-    await supabase
-      .from("classes")
-      .update({
-        current_stream_url: url || contentUrl,
-        current_mode: stageMode,
-        is_live: isLive,
+    // 1. Record entry in class_attendance table
+    const logEntry = async () => {
+      await supabase.from("class_attendance").insert([
+        {
+          class_id: classroom.id,
+          user_id: user.id || "usr_guest",
+          user_name: user.name || "Anonymous",
+          user_role: user.role || "student",
+        },
+      ]);
+      fetchAttendance();
+    };
+
+    const fetchAttendance = async () => {
+      const { data } = await supabase
+        .from("class_attendance")
+        .select("*")
+        .eq("class_id", classroom.id)
+        .order("joined_at", { ascending: true });
+
+      if (data) setAttendanceLogs(data);
+    };
+
+    logEntry();
+
+    // 2. Real-time Presence Tracker
+    const presenceRoom = supabase.channel(`presence_${classroom.id}`, {
+      config: { presence: { key: user.name } },
+    });
+
+    presenceRoom
+      .on("presence", { event: "sync" }, () => {
+        const state = presenceRoom.presenceState();
+        const activeUsersCount = Object.keys(state).length;
+        setLiveAttendeesCount(Math.max(1, activeUsersCount));
       })
-      .eq("id", classroom.id);
-  }
-};
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await presenceRoom.track({
+            user_name: user.name,
+            role: user.role,
+            online_at: new Date().toISOString(),
+          });
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(presenceRoom);
+    };
+  }, [classroom?.id, user]);
+
+  const handleUpdateContent = async (url, notice = "") => {
+    if (url) setContentUrl(url);
+    if (notice) setNoticeText(notice);
+
+    if (isTeacher && classroom?.id) {
+      await supabase
+        .from("classes")
+        .update({
+          current_stream_url: url || contentUrl,
+          current_mode: stageMode,
+          is_live: isLive,
+        })
+        .eq("id", classroom.id);
+    }
+  };
+
   const handleToggleMute = (id) => {
     setParticipants((prev) =>
       prev.map((p) => (p.id === id ? { ...p, isMuted: !p.isMuted } : p))
     );
   };
 
-  // Instant Mute/Unmute Toggle without alert popups
   const handleToggleMuteAll = () => {
     const nextState = !areAllMuted;
     setAreAllMuted(nextState);
@@ -71,28 +130,51 @@ export default function ClassroomPage({ classroom, onBack }) {
 
   return (
     <div className="min-h-screen w-full bg-gray-950 text-gray-100 flex flex-col font-sans">
-      {/* Header */}
+      {/* Top Header */}
       <header className="sticky top-0 z-30 bg-gray-900/90 backdrop-blur border-b border-gray-800 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="p-1.5 rounded-xl hover:bg-gray-800 text-gray-400 hover:text-white transition">
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h2 className="text-sm sm:text-base font-bold text-white truncate max-w-[200px] sm:max-w-md">{classroom?.title}</h2>
+            <h2 className="text-sm sm:text-base font-bold text-white truncate max-w-[180px] sm:max-w-md">{classroom?.title}</h2>
             <span className="text-[11px] text-gray-400 font-mono">Code: {classroom?.code}</span>
           </div>
         </div>
 
-        <button
-          onClick={() => {
-            navigator.clipboard.writeText(classroom?.code || "");
-            alert("Class Code copied!");
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-xs font-semibold text-gray-200 transition"
-        >
-          <Share2 className="w-3.5 h-3.5" />
-          <span>Invite</span>
-        </button>
+        {/* Right Header: Active Count, Attendance Register & Invite */}
+        <div className="flex items-center gap-2">
+          {/* Realtime Active Presence Badge */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-gray-800/80 border border-gray-700 text-xs text-gray-300">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <Users className="w-3.5 h-3.5 text-gray-400" />
+            <span className="font-bold">{liveAttendeesCount}</span>
+            <span className="hidden sm:inline text-gray-400">Online</span>
+          </div>
+
+          {/* Teacher Attendance Register Button */}
+          {isTeacher && (
+            <button
+              onClick={() => setAttendanceModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 text-xs font-semibold border border-indigo-500/30 transition"
+              title="View Attendance & Export Report"
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Register</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(classroom?.code || "");
+              alert("Class Code copied!");
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-xs font-semibold text-gray-200 transition"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>Invite</span>
+          </button>
+        </div>
       </header>
 
       {/* Main Room Container */}
@@ -153,7 +235,7 @@ export default function ClassroomPage({ classroom, onBack }) {
         {/* 4. Lower Workspace Tabs */}
         <div className="pt-2">
           <TabSwitcher activeTab={activeTab} onTabChange={setActiveTab} />
-         {activeTab === "live-qna" && <LiveQnA classId={classroom?.id} />}
+          {activeTab === "live-qna" && <LiveQnA classId={classroom?.id || "cls_1"} />}
           {activeTab === "lectures" && (
             <PreviousLectures
               onPlayRecordedLecture={(url) => {
@@ -163,10 +245,27 @@ export default function ClassroomPage({ classroom, onBack }) {
               }}
             />
           )}
-          {activeTab === "classwork" && <ClassworkBoard classId={classroom?.id || "cls_1"} />}
-      {activeTab === "community" && <DiscussionRooms classId={classroom?.id || "cls_1"} />}
+          {activeTab === "classwork" && (
+            <ClassworkBoard
+              classId={classroom?.id || "cls_1"}
+              onPreviewMedia={(url, type) => {
+                setStageMode(type);
+                setContentUrl(url);
+                setIsStageCollapsed(false);
+              }}
+            />
+          )}
+          {activeTab === "community" && <DiscussionRooms classId={classroom?.id || "cls_1"} />}
         </div>
       </main>
+
+      {/* Attendance & CSV Report Modal */}
+      <AttendanceModal
+        isOpen={attendanceModalOpen}
+        onClose={() => setAttendanceModalOpen(false)}
+        attendanceLogs={attendanceLogs}
+        classTitle={classroom?.title || "Classroom"}
+      />
     </div>
   );
 }
