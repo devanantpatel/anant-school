@@ -3,6 +3,7 @@ import { LanguageProvider } from "./context/LanguageContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import LandingPage from "./pages/LandingPage";
 import DashboardPage from "./pages/DashboardPage";
+import ClassroomPage from "./pages/ClassroomPage";
 import AuthModal from "./components/common/AuthModal";
 import CoffeeModal from "./components/common/CoffeeModal";
 
@@ -18,32 +19,22 @@ function MainApp() {
     setIsAuthOpen(true);
   };
 
-  const handleSelectClassroom = (classroom) => {
-    setActiveClassroom(classroom);
-  };
-
-  // 1. Agar user kisi class ke andar hai
+  // 1. Live Interactive Classroom Room
   if (isAuthenticated && activeClassroom) {
     return (
-      <div className="min-h-screen bg-black text-white p-6 flex flex-col items-center justify-center">
-        <h2 className="text-2xl font-bold mb-2">Classroom: {activeClassroom.title}</h2>
-        <p className="text-gray-400 text-sm mb-6">Phase 3: Live Video Stage + WebRTC Grid + 3 Tabs coming next!</p>
-        <button
-          onClick={() => setActiveClassroom(null)}
-          className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold"
-        >
-          Back to Dashboard
-        </button>
-      </div>
+      <ClassroomPage
+        classroom={activeClassroom}
+        onBack={() => setActiveClassroom(null)}
+      />
     );
   }
 
-  // 2. Agar user authenticated hai -> Dashboard dikhao
+  // 2. Dashboard Workspace
   if (isAuthenticated && user) {
-    return <DashboardPage onSelectClassroom={handleSelectClassroom} />;
+    return <DashboardPage onSelectClassroom={(cls) => setActiveClassroom(cls)} />;
   }
 
-  // 3. Agar user logged out hai -> Landing Page dikhao
+  // 3. Public Landing Page
   return (
     <>
       <LandingPage
