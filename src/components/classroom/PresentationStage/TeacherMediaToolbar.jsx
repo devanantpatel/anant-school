@@ -1,51 +1,45 @@
 import React, { useState } from "react";
-import { Video, Upload, FileText, Image as ImageIcon, Megaphone, Layout, Monitor } from "lucide-react";
+import { Video, Upload, FileText, Image as ImageIcon, Megaphone, Layout } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
 
-export default function TeacherMediaToolbar({ onSelectMode, onUpdateContent, onToggleLive, isLive }) {
+export default function TeacherMediaToolbar({ onBroadcastStage, isLive, onToggleLive, isTeacherOverride }) {
   const { user } = useAuth();
-  if (user?.role !== "teacher") return null;
+  const isTeacher = isTeacherOverride !== undefined ? isTeacherOverride : user?.role === "teacher";
+
+  // Agar user teacher nahi hai toh tools hide rahenge
+  if (!isTeacher) return null;
 
   const [activeTab, setActiveTab] = useState("youtube");
   const [ytLink, setYtLink] = useState("");
   const [notice, setNotice] = useState("");
-  const [showSoonToast, setShowSoonToast] = useState(false);
 
   const handleYtSubmit = (e) => {
     e.preventDefault();
     if (!ytLink.trim()) return;
-    onSelectMode("youtube");
-    onUpdateContent(ytLink.trim());
+    onBroadcastStage("youtube", ytLink.trim(), "");
   };
 
   const handleFileUpload = (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
     const objectUrl = URL.createObjectURL(file);
-    onSelectMode(type);
-    onUpdateContent(objectUrl);
+    onBroadcastStage(type, objectUrl, "");
   };
 
   const handleNoticeSubmit = (e) => {
     e.preventDefault();
     if (!notice.trim()) return;
-    onSelectMode("notice");
-    onUpdateContent("", notice.trim());
-  };
-
-  const handleScreenShareClick = () => {
-    setShowSoonToast(true);
-    setTimeout(() => setShowSoonToast(false), 2500);
+    onBroadcastStage("notice", "", notice.trim());
   };
 
   return (
-    <div className="w-full bg-white dark:bg-gray-900 p-2.5 sm:p-3 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm space-y-3 relative">
+    <div className="w-full bg-white dark:bg-gray-900 p-2.5 sm:p-3 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm space-y-3">
       {/* Mode Selectors */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs scrollbar-none">
         <button
           onClick={() => {
             setActiveTab("youtube");
-            onSelectMode("youtube");
+            onBroadcastStage("youtube", ytLink || "https://www.youtube.com/watch?v=jfKfPfyJRdk", "");
           }}
           className={`flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold transition shrink-0 ${
             activeTab === "youtube" ? "bg-red-600 text-white" : "bg-gray-100 dark:bg-gray-800 text-gray-400"
@@ -57,23 +51,13 @@ export default function TeacherMediaToolbar({ onSelectMode, onUpdateContent, onT
         <button
           onClick={() => {
             setActiveTab("whiteboard");
-            onSelectMode("whiteboard");
+            onBroadcastStage("whiteboard", "", "");
           }}
           className={`flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold transition shrink-0 ${
             activeTab === "whiteboard" ? "bg-indigo-600 text-white" : "bg-gray-100 dark:bg-gray-800 text-gray-400"
           }`}
         >
           <Layout className="w-3.5 h-3.5" /> Whiteboard
-        </button>
-
-        {/* Screen Share (No Popup, Smooth Badge Status) */}
-        <button
-          onClick={handleScreenShareClick}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold bg-gray-100 dark:bg-gray-800 text-gray-400 hover:text-gray-200 transition shrink-0 relative"
-        >
-          <Monitor className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Screen Share</span>
-          <span className="text-[9px] px-1 bg-amber-500/20 text-amber-400 rounded">Soon</span>
         </button>
 
         <label className={`flex items-center gap-1 px-3 py-1.5 rounded-xl font-semibold cursor-pointer transition shrink-0 ${
@@ -140,26 +124,18 @@ export default function TeacherMediaToolbar({ onSelectMode, onUpdateContent, onT
         </button>
       </div>
 
-      {/* Screen Share Coming Soon Non-Blocking Notification */}
-      {showSoonToast && (
-        <div className="text-[11px] text-amber-400 bg-amber-950/40 border border-amber-900/60 px-3 py-1.5 rounded-xl flex items-center justify-between animate-fadeIn">
-          <span>⚡ Screen Share is in testing and will be enabled in the upcoming WebRTC patch.</span>
-          <button onClick={() => setShowSoonToast(false)} className="text-gray-400 hover:text-white">✕</button>
-        </div>
-      )}
-
       {/* Forms */}
       {activeTab === "youtube" && (
         <form onSubmit={handleYtSubmit} className="flex gap-2">
           <input
             type="text"
-            placeholder="Paste YouTube Link or Video ID..."
+            placeholder="Paste YouTube Link or Video ID to Cast..."
             value={ytLink}
             onChange={(e) => setYtLink(e.target.value)}
             className="flex-1 px-3 py-1.5 text-xs rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white outline-none"
           />
-          <button type="submit" className="px-4 py-1.5 rounded-xl bg-red-600 text-white text-xs font-semibold">
-            Cast
+          <button type="submit" className="px-4 py-1.5 rounded-xl bg-red-600 text-white text-xs font-semibold active:scale-95 transition">
+            Cast to All
           </button>
         </form>
       )}
@@ -173,7 +149,7 @@ export default function TeacherMediaToolbar({ onSelectMode, onUpdateContent, onT
             onChange={(e) => setNotice(e.target.value)}
             className="flex-1 px-3 py-1.5 text-xs rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white outline-none"
           />
-          <button type="submit" className="px-4 py-1.5 rounded-xl bg-amber-600 text-white text-xs font-semibold">
+          <button type="submit" className="px-4 py-1.5 rounded-xl bg-amber-600 text-white text-xs font-semibold active:scale-95 transition">
             Broadcast
           </button>
         </form>
