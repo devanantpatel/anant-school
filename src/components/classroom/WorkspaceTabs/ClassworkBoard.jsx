@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { 
   FileText, 
   Download, 
-  UploadCloud, 
   Plus, 
   Loader2, 
   Trash2, 
@@ -10,12 +9,20 @@ import {
   AlertCircle,
   Eye,
   Calendar,
-  Layers
+  Layers,
+  ClipboardCheck,
+  Send,
+  CheckCircle2,
+  Edit2,
+  MessageSquare,
+  RotateCcw
 } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
 import { supabase } from "../../../services/supabaseClient";
 import { uploadToTelegramWithProgress, deleteFromTelegram } from "../../../services/telegramStorage";
 import CenterModal from "../../common/CenterModal";
+import SubmitAssignmentModal from "./SubmitAssignmentModal";
+import TeacherGradingModal from "./TeacherGradingModal";
 
 export default function ClassworkBoard({ classId, onPreviewMedia }) {
   const { user } = useAuth();
@@ -25,20 +32,35 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
 
+  // Student Submissions State Map: { [classwork_id]: submissionObject }
+  const [studentSubmissions, setStudentSubmissions] = useState({});
+
   // Form states
   const [titlePrefix, setTitlePrefix] = useState("");
   const [type, setType] = useState("Notes");
   const [dueDate, setDueDate] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
 
-  // Multi-upload Queue (Array of active uploading files)
+  // Multi-upload Queue
   const [uploadQueue, setUploadQueue] = useState([]);
 
-  // Center Modal Delete State
+  // Modals
+  const [activeSubmissionAssignment, setActiveSubmissionAssignment] = useState(null);
+  const [activeGradingAssignment, setActiveGradingAssignment] = useState(null);
+
+  // Custom Center Modal States
   const [deleteDialog, setDeleteDialog] = useState({
     isOpen: false,
     item: null,
+    isStudentUnsubmit: false,
   });
+
+  const [toastMessage, setToastMessage] = useState("");
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(""), 2500);
+  };
 
   const fetchClasswork = async () => {
     if (!classId) return;
@@ -57,9 +79,29 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
     }
   };
 
+  // Fetch Student's own submissions for this class
+  const fetchStudentSubmissions = async () => {
+    if (!classId || !user?.id || isTeacher) return;
+    const { data } = await supabase
+      .from("assignment_submissions")
+      .select("*")
+      .eq("class_id", classId)
+      .eq("student_id", user.id);
+
+    if (data) {
+      const map = {};
+      data.forEach((sub) => {
+        map[sub.classwork_id] = sub;
+      });
+      setStudentSubmissions(map);
+    }
+  };
+
   useEffect(() => {
     fetchClasswork();
+    fetchStudentSubmissions();
 
+    // Realtime listeners
     const channel = supabase
       .channel(`classwork_stream_${classId}`)
       .on(
@@ -67,12 +109,17 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
         { event: "*", schema: "public", table: "classwork", filter: `class_id=eq.${classId}` },
         () => fetchClasswork()
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "assignment_submissions", filter: `class_id=eq.${classId}` },
+        () => fetchStudentSubmissions()
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [classId]);
+  }, [classId, user?.id]);
 
   // Handle Multi-File Upload Queue
   const handleStartMultiUpload = (e) => {
@@ -89,7 +136,6 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
     setSelectedFiles([]);
     setDueDate("");
 
-    // Create unique task for each file
     const newTasks = filesArray.map((file, idx) => ({
       taskId: "task_" + Date.now() + "_" + idx,
       title: baseTitle ? (filesArray.length > 1 ? `${baseTitle} (Part ${idx + 1})` : baseTitle) : file.name.replace(/\.[^/.]+$/, ""),
@@ -103,10 +149,8 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
       fileRef: file,
     }));
 
-    // Add all to active upload queue
     setUploadQueue((prev) => [...newTasks, ...prev]);
 
-    // Trigger uploads concurrently
     newTasks.forEach((task) => {
       uploadToTelegramWithProgress(task.fileRef, (progress) => {
         setUploadQueue((prevQueue) =>
@@ -124,7 +168,6 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
         );
       })
         .then(async (uploaded) => {
-          // Record in Supabase
           const { error } = await supabase.from("classwork").insert([
             {
               class_id: classId,
@@ -137,10 +180,9 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
           ]);
 
           if (error) throw error;
-
-          // Remove from uploading queue upon success
           setUploadQueue((prevQueue) => prevQueue.filter((item) => item.taskId !== task.taskId));
           fetchClasswork();
+          showToast(`"${task.title}" upload ho gaya!`);
         })
         .catch((err) => {
           setUploadQueue((prevQueue) =>
@@ -154,36 +196,60 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
     });
   };
 
-  const removeFailedTask = (taskId) => {
-    setUploadQueue((prev) => prev.filter((item) => item.taskId !== taskId));
-  };
-
-  const promptDelete = (item) => {
+  // Student Unsubmit / Delete Homework
+  const handleStudentUnsubmit = (submission) => {
     setDeleteDialog({
       isOpen: true,
-      item: item,
+      item: submission,
+      isStudentUnsubmit: true,
     });
   };
 
-  const executePermanentDelete = async () => {
-    const item = deleteDialog.item;
-    setDeleteDialog({ isOpen: false, item: null });
+  // Teacher Delete Material
+  const promptDeleteMaterial = (item) => {
+    setDeleteDialog({
+      isOpen: true,
+      item: item,
+      isStudentUnsubmit: false,
+    });
+  };
+
+  const executeConfirmedDelete = async () => {
+    const { item, isStudentUnsubmit } = deleteDialog;
+    setDeleteDialog({ isOpen: false, item: null, isStudentUnsubmit: false });
     if (!item) return;
 
     try {
-      if (item.telegram_message_id) {
-        await deleteFromTelegram(item.telegram_message_id);
+      if (isStudentUnsubmit) {
+        // Delete submission from Supabase
+        await supabase.from("assignment_submissions").delete().eq("id", item.id);
+        fetchStudentSubmissions();
+        showToast("Homework unsubmitted successfully!");
+      } else {
+        // Teacher deletes material from Telegram & Supabase
+        if (item.telegram_message_id) {
+          await deleteFromTelegram(item.telegram_message_id);
+        }
+        await supabase.from("classwork").delete().eq("id", item.id);
+        setItems((prev) => prev.filter((i) => i.id !== item.id));
+        showToast("Material permanently deleted.");
       }
-      const { error } = await supabase.from("classwork").delete().eq("id", item.id);
-      if (error) throw error;
-      setItems((prev) => prev.filter((i) => i.id !== item.id));
     } catch (err) {
-      alert("Failed to delete material: " + err.message);
+      console.error("Delete error:", err);
     }
   };
 
   return (
-    <div className="p-4 bg-white dark:bg-gray-900 rounded-b-2xl border-x border-b border-gray-200 dark:border-gray-800 space-y-4">
+    <div className="p-4 bg-white dark:bg-gray-900 rounded-b-2xl border-x border-b border-gray-200 dark:border-gray-800 space-y-4 relative">
+      
+      {/* Toast Notification Pill */}
+      {toastMessage && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl bg-gray-900/95 text-white border border-gray-700 shadow-2xl flex items-center gap-2 text-xs font-semibold animate-fadeIn">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Header */}
       {isTeacher && (
         <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-gray-800">
@@ -191,7 +257,7 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
             <h3 className="text-xs sm:text-sm font-bold text-gray-900 dark:text-white">
               Course Material & Cloud Vault
             </h3>
-            <p className="text-[11px] text-gray-500">Supports batch multi-file uploads with Telegram sync.</p>
+            <p className="text-[11px] text-gray-500">Post study notes or assign homework with submissions.</p>
           </div>
           <button
             onClick={() => setModalOpen(true)}
@@ -205,8 +271,7 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
 
       {/* Tiles Container */}
       <div className="space-y-3">
-        
-        {/* Active Multi-Upload Tiles Queue */}
+        {/* Upload Queue Tiles */}
         {uploadQueue.map((uploadTask) => (
           <div
             key={uploadTask.taskId}
@@ -232,7 +297,7 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
 
               {uploadTask.error && (
                 <button 
-                  onClick={() => removeFailedTask(uploadTask.taskId)}
+                  onClick={() => setUploadQueue((prev) => prev.filter((i) => i.taskId !== uploadTask.taskId))}
                   className="text-red-500 p-1.5 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition"
                 >
                   <X className="w-4 h-4" />
@@ -240,7 +305,6 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
               )}
             </div>
 
-            {/* In-Card Progress Bar */}
             <div className="w-full bg-gray-200 dark:bg-gray-800 rounded-full h-2 overflow-hidden">
               <div
                 className={`h-full transition-all duration-200 rounded-full ${
@@ -250,7 +314,6 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
               />
             </div>
 
-            {/* In-Card Status Details */}
             <div className="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400 font-mono">
               <span>{uploadTask.loadedMB} MB / {uploadTask.totalMB} MB transferred</span>
               <span className="text-indigo-600 dark:text-indigo-400 font-bold">
@@ -266,7 +329,7 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
           </div>
         ))}
 
-        {/* Existing Materials */}
+        {/* Existing Materials List */}
         {loading ? (
           <div className="flex items-center justify-center py-12 text-gray-400 gap-2">
             <Loader2 className="w-5 h-5 animate-spin text-indigo-500" />
@@ -277,73 +340,163 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
             No lecture notes or assignments uploaded yet.
           </div>
         ) : (
-          items.map((item) => (
-            <div
-              key={item.id}
-              className="flex items-center justify-between p-3.5 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40 hover:border-indigo-300 dark:hover:border-indigo-700 transition"
-            >
-              <div className="flex items-center gap-3 overflow-hidden">
-                <div className={`p-2.5 rounded-xl shrink-0 ${
-                  item.type === "Notes" 
-                    ? "bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400"
-                    : "bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400"
-                }`}>
-                  <FileText className="w-4 h-4" />
-                </div>
-                <div className="overflow-hidden">
-                  <h4 className="text-xs sm:text-sm font-semibold text-gray-900 dark:text-white truncate">
-                    {item.title}
-                  </h4>
-                  <div className="flex items-center gap-2 text-[10px] text-gray-500 mt-0.5">
-                    <span className="font-semibold text-indigo-600 dark:text-indigo-400">{item.type}</span>
-                    <span>•</span>
-                    <span className="flex items-center gap-1">
-                      <Calendar className="w-2.5 h-2.5" />
-                      {item.due_date}
-                    </span>
+          items.map((item) => {
+            const studentSub = studentSubmissions[item.id];
+            const isSubmitted = !!studentSub;
+            const isGraded = studentSub && studentSub.grade && studentSub.grade !== "Ungraded";
+
+            return (
+              <div
+                key={item.id}
+                className="p-3.5 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40 hover:border-indigo-300 dark:hover:border-indigo-700 transition flex flex-col gap-2.5"
+              >
+                {/* Main Card Info Row */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <div className={`p-2.5 rounded-xl shrink-0 ${
+                      item.type === "Notes" 
+                        ? "bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400"
+                        : "bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400"
+                    }`}>
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <div className="overflow-hidden">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs sm:text-sm font-semibold text-gray-900 dark:text-white truncate">
+                          {item.title}
+                        </h4>
+                        {/* Student Submission Badges */}
+                        {!isTeacher && item.type === "Assignment" && (
+                          isGraded ? (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 shrink-0">
+                              ★ {studentSub.grade}
+                            </span>
+                          ) : isSubmitted ? (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 shrink-0">
+                              ✓ Submitted
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 shrink-0">
+                              Pending
+                            </span>
+                          )
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 text-[10px] text-gray-500 mt-0.5">
+                        <span className="font-semibold text-indigo-600 dark:text-indigo-400">{item.type}</span>
+                        <span>•</span>
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-2.5 h-2.5" />
+                          {item.due_date}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Action Buttons Row */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Student Actions */}
+                    {!isTeacher && item.type === "Assignment" && (
+                      isSubmitted ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setActiveSubmissionAssignment(item)}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 text-xs font-semibold hover:bg-gray-300 transition"
+                            title="Edit Submission"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                            <span className="hidden sm:inline">Edit</span>
+                          </button>
+                          <button
+                            onClick={() => handleStudentUnsubmit(studentSub)}
+                            className="p-1.5 rounded-xl text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition"
+                            title="Unsubmit / Delete Submission"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setActiveSubmissionAssignment(item)}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm active:scale-95 transition"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>Turn In</span>
+                        </button>
+                      )
+                    )}
+
+                    {/* Teacher Actions */}
+                    {isTeacher && item.type === "Assignment" && (
+                      <button
+                        onClick={() => setActiveGradingAssignment(item)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-600 dark:text-indigo-300 text-xs font-semibold border border-indigo-200 dark:border-indigo-800 transition"
+                      >
+                        <ClipboardCheck className="w-3.5 h-3.5" />
+                        <span>Submissions</span>
+                      </button>
+                    )}
+
+                    {/* Download */}
+                    {item.file_url && (
+                      <a
+                        href={item.file_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        download
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-xl bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 font-semibold hover:text-indigo-600 transition"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Download</span>
+                      </a>
+                    )}
+
+                    {/* Teacher Delete */}
+                    {isTeacher && (
+                      <button
+                        onClick={() => promptDeleteMaterial(item)}
+                        className="p-1.5 rounded-xl text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition"
+                        title="Delete permanently"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
-              </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-1.5 shrink-0">
-                {onPreviewMedia && item.file_url && (
-                  <button
-                    onClick={() => onPreviewMedia(item.file_url, item.type.toLowerCase().includes("pdf") ? "pdf" : "image")}
-                    className="p-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 transition"
-                    title="Cast to Stage"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                  </button>
+                {/* Student Feedback & Teacher Remarks Display Box */}
+                {!isTeacher && isSubmitted && (
+                  <div className="mt-1 p-2.5 rounded-xl bg-white dark:bg-gray-900 border border-gray-200/80 dark:border-gray-700/60 text-xs flex flex-col gap-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                        Your Submission: {studentSub.grade !== "Ungraded" ? `Graded (${studentSub.grade})` : "Turned in (Waiting for evaluation)"}
+                      </span>
+                      {studentSub.file_url && (
+                        <a href={studentSub.file_url} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline text-[10px]">
+                          View Submitted File
+                        </a>
+                      )}
+                    </div>
+
+                    {studentSub.feedback && (
+                      <div className="mt-1 p-2 rounded-lg bg-indigo-50/50 dark:bg-indigo-950/30 text-indigo-950 dark:text-indigo-200 text-[11px] flex items-start gap-1.5">
+                       
+<MessageSquare className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                        <span><strong>Teacher's Feedback:</strong> {studentSub.feedback}</span>
+                      </div>
+                    )}
+                  </div>
                 )}
 
-                <a
-                  href={item.file_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  download
-                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-xl bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 font-semibold hover:text-indigo-600 transition"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Download</span>
-                </a>
-
-                {isTeacher && (
-                  <button
-                    onClick={() => promptDelete(item)}
-                    className="p-1.5 rounded-xl text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition"
-                    title="Delete permanently from App & Telegram"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                )}
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
-      {/* Upload Modal (Multiple File Picking Enabled) */}
+      {/* Upload Material Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
           <div className="w-full max-w-sm bg-white dark:bg-gray-800 rounded-3xl p-6 shadow-2xl border border-gray-100 dark:border-gray-700 relative">
@@ -351,14 +504,14 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
               onClick={() => setModalOpen(false)}
               className="absolute top-4 right-4 p-1.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
 
             <h3 className="text-base font-bold text-gray-900 dark:text-white mb-1">
               Upload Course Material
             </h3>
             <p className="text-xs text-gray-500 mb-4">
-              Select single or multiple files to upload simultaneously.
+              Post notes or homework assignment[cite: 1].
             </p>
 
             <form onSubmit={handleStartMultiUpload} className="space-y-3.5 text-xs">
@@ -368,7 +521,7 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Chapter 3 Notes (Leave blank to use filename)"
+                  placeholder="e.g. Chapter 3 Notes"
                   value={titlePrefix}
                   onChange={(e) => setTitlePrefix(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-indigo-500"
@@ -414,7 +567,7 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
 
               <div>
                 <label className="block font-semibold text-gray-700 dark:text-gray-300 mb-1">
-                  Select Files (Multiple allowed)
+                  Select Files
                 </label>
                 <input
                   type="file"
@@ -423,11 +576,6 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
                   onChange={(e) => setSelectedFiles(e.target.files)}
                   className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:bg-gray-100 dark:file:bg-gray-700 file:text-gray-700 dark:file:text-gray-200 hover:file:bg-gray-200"
                 />
-                {selectedFiles.length > 0 && (
-                  <span className="text-[10px] text-indigo-500 font-semibold mt-1 block">
-                    ✓ {selectedFiles.length} file{selectedFiles.length > 1 ? "s" : ""} selected for batch upload
-                  </span>
-                )}
               </div>
 
               <button
@@ -436,23 +584,49 @@ export default function ClassworkBoard({ classId, onPreviewMedia }) {
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold shadow-md active:scale-95 transition mt-2"
               >
                 <Layers className="w-4 h-4" />
-                <span>Start Batch Upload ({selectedFiles.length || 0})</span>
+                <span>Upload ({selectedFiles.length || 0})</span>
               </button>
             </form>
           </div>
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
+      {/* Delete / Unsubmit Center Confirmation Modal */}
       <CenterModal
         isOpen={deleteDialog.isOpen}
         type="danger"
-        title="Delete Material?"
-        message={`"${deleteDialog.item?.title}" will be permanently removed from this classroom and purged from Telegram cloud storage.`}
-        confirmText="Yes, Delete"
+        title={deleteDialog.isStudentUnsubmit ? "Unsubmit Homework?" : "Delete Material?"}
+        message={
+          deleteDialog.isStudentUnsubmit
+            ? "Aapka submitted answer aur attached file remove ho jayegi. Aap dobara naya homework submit kar sakte hain."
+            : `"${deleteDialog.item?.title}" permanently classroom aur Telegram vault se purge ho jayega.`
+        }
+        confirmText={deleteDialog.isStudentUnsubmit ? "Yes, Unsubmit" : "Yes, Delete"}
         cancelText="Cancel"
-        onConfirm={executePermanentDelete}
-        onCancel={() => setDeleteDialog({ isOpen: false, item: null })}
+        onConfirm={executeConfirmedDelete}
+        onCancel={() => setDeleteDialog({ isOpen: false, item: null, isStudentUnsubmit: false })}
+      />
+
+      {/* Student Turn In & Edit Modal */}
+      <SubmitAssignmentModal
+        isOpen={!!activeSubmissionAssignment}
+        assignment={activeSubmissionAssignment}
+        existingSubmission={activeSubmissionAssignment ? studentSubmissions[activeSubmissionAssignment.id] : null}
+        onClose={() => setActiveSubmissionAssignment(null)}
+        onSubmissionSuccess={() => {
+          showToast("Homework turned in successfully!");
+          fetchStudentSubmissions();
+        }}
+      />
+
+      {/* Teacher Grading Modal */}
+      <TeacherGradingModal
+        isOpen={!!activeGradingAssignment}
+        assignment={activeGradingAssignment}
+        onClose={() => {
+          setActiveGradingAssignment(null);
+          fetchClasswork();
+        }}
       />
     </div>
   );
