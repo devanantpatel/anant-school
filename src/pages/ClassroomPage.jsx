@@ -10,6 +10,7 @@ import PreviousLectures from "../components/classroom/WorkspaceTabs/PreviousLect
 import ClassworkBoard from "../components/classroom/WorkspaceTabs/ClassworkBoard";
 import DiscussionRooms from "../components/classroom/WorkspaceTabs/DiscussionRooms";
 import { useAuth } from "../context/AuthContext";
+import { supabase } from "../services/supabaseClient";
 
 export default function ClassroomPage({ classroom, onBack }) {
   const { user } = useAuth();
@@ -39,11 +40,22 @@ export default function ClassroomPage({ classroom, onBack }) {
     { id: "p3", name: user?.name || "You", avatar: user?.avatar, isCameraOn: isCamOn, isMuted: !isMicOn, isHandRaised: isHandRaised, isSelf: true },
   ]);
 
-  const handleUpdateContent = (url, notice = "") => {
-    if (url) setContentUrl(url);
-    if (notice) setNoticeText(notice);
-  };
+ const handleUpdateContent = async (url, notice = "") => {
+  if (url) setContentUrl(url);
+  if (notice) setNoticeText(notice);
 
+  // Sync to Supabase in background for all students
+  if (user?.role === "teacher" && classroom?.id) {
+    await supabase
+      .from("classes")
+      .update({
+        current_stream_url: url || contentUrl,
+        current_mode: stageMode,
+        is_live: isLive,
+      })
+      .eq("id", classroom.id);
+  }
+};
   const handleToggleMute = (id) => {
     setParticipants((prev) =>
       prev.map((p) => (p.id === id ? { ...p, isMuted: !p.isMuted } : p))
@@ -141,7 +153,7 @@ export default function ClassroomPage({ classroom, onBack }) {
         {/* 4. Lower Workspace Tabs */}
         <div className="pt-2">
           <TabSwitcher activeTab={activeTab} onTabChange={setActiveTab} />
-          {activeTab === "live-qna" && <LiveQnA />}
+         {activeTab === "live-qna" && <LiveQnA classId={classroom?.id} />}
           {activeTab === "lectures" && (
             <PreviousLectures
               onPlayRecordedLecture={(url) => {
@@ -152,7 +164,7 @@ export default function ClassroomPage({ classroom, onBack }) {
             />
           )}
           {activeTab === "classwork" && <ClassworkBoard />}
-          {activeTab === "community" && <DiscussionRooms />}
+      {activeTab === "community" && <DiscussionRooms classId={classroom?.id || "cls_1"} />}
         </div>
       </main>
     </div>

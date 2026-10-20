@@ -1,52 +1,121 @@
-import React, { useState } from "react";
-import { Send, MessageCircle } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Send, Loader2 } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
+import { supabase } from "../../../services/supabaseClient";
 
-export default function LiveQnA() {
+export default function LiveQnA({ classId }) {
   const { user } = useAuth();
-  const [messages, setMessages] = useState([
-    { id: 1, sender: "Instructor", text: "Welcome everyone! Feel free to post questions here during the stream.", isHost: true },
-    { id: 2, sender: "Rahul Verma", text: "Sir, could you explain the 3rd formula again?", isHost: false },
-  ]);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  const handleSend = (e) => {
+  // 1. Initial messages fetch & Realtime subscription
+  useEffect(() => {
+    if (!classId) return;
+
+    // Fetch existing live-qna messages
+    const fetchMessages = async () => {
+      const { data, error } = await supabase
+        .from("class_messages")
+        .select("*")
+        .eq("class_id", classId)
+        .eq("channel", "live-qna")
+        .order("created_at", { ascending: true });
+
+      if (!error && data) {
+        setMessages(data);
+      }
+      setLoading(false);
+    };
+
+    fetchMessages();
+
+    // Setup Supabase Realtime channel
+    const channel = supabase
+      .channel(`live_qna_${classId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "class_messages",
+          filter: `class_id=eq.${classId}`,
+        },
+        (payload) => {
+          if (payload.new.channel === "live-qna") {
+            setMessages((prev) => [...prev, payload.new]);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [classId]);
+
+  // 2. Send message to Supabase
+  const handleSend = async (e) => {
     e.preventDefault();
-    if (!input.trim()) return;
-    setMessages((prev) => [
-      ...prev,
+    if (!input.trim() || !classId) return;
+
+    const textToSend = input.trim();
+    setInput("");
+
+    const { error } = await supabase.from("class_messages").insert([
       {
-        id: Date.now(),
-        sender: user?.name || "Student",
-        text: input.trim(),
-        isHost: user?.role === "teacher",
+        class_id: classId,
+        channel: "live-qna",
+        sender_name: user?.name || "Student",
+        sender_role: user?.role || "student",
+        sender_avatar: user?.avatar || "",
+        text: textToSend,
       },
     ]);
-    setInput("");
+
+    if (error) {
+      console.error("Error sending message:", error);
+    }
   };
 
   return (
     <div className="flex flex-col h-80 bg-white dark:bg-gray-900 rounded-b-2xl border-x border-b border-gray-200 dark:border-gray-800 overflow-hidden">
-      {/* Message List */}
+      {/* Messages Viewport */}
       <div className="flex-1 p-4 overflow-y-auto space-y-3">
-        {messages.map((msg) => (
-          <div key={msg.id} className="flex flex-col text-xs">
-            <div className="flex items-center gap-1.5 mb-0.5">
-              <span className={`font-bold ${msg.isHost ? "text-indigo-600 dark:text-indigo-400" : "text-gray-700 dark:text-gray-300"}`}>
-                {msg.sender}
-              </span>
-              {msg.isHost && (
-                <span className="text-[9px] px-1 bg-indigo-100 dark:bg-indigo-950 text-indigo-600 rounded">Host</span>
-              )}
-            </div>
-            <p className="text-gray-800 dark:text-gray-200 bg-gray-50 dark:bg-gray-800/60 p-2.5 rounded-xl border border-gray-100 dark:border-gray-800">
-              {msg.text}
-            </p>
+        {loading ? (
+          <div className="flex items-center justify-center h-full text-gray-400 gap-2">
+            <Loader2 className="w-5 h-5 animate-spin text-indigo-500" />
+            <span className="text-xs">Loading live chat...</span>
           </div>
-        ))}
+        ) : messages.length === 0 ? (
+          <div className="text-center text-xs text-gray-500 py-10">
+            No doubts or comments yet. Be the first to ask!
+          </div>
+        ) : (
+          messages.map((msg) => {
+            const isHost = msg.sender_role === "teacher";
+            return (
+              <div key={msg.id} className="flex flex-col text-xs">
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <span className={`font-bold ${isHost ? "text-indigo-600 dark:text-indigo-400" : "text-gray-700 dark:text-gray-300"}`}>
+                    {msg.sender_name}
+                  </span>
+                  {isHost && (
+                    <span className="text-[9px] px-1 bg-indigo-100 dark:bg-indigo-950 text-indigo-600 rounded">
+                      Host
+                    </span>
+                  )}
+                </div>
+                <p className="text-gray-800 dark:text-gray-200 bg-gray-50 dark:bg-gray-800/60 p-2.5 rounded-xl border border-gray-100 dark:border-gray-800">
+                  {msg.text}
+                </p>
+              </div>
+            );
+          })
+        )}
       </div>
 
-      {/* Input Form */}
+      {/* Input Field */}
       <form onSubmit={handleSend} className="p-2.5 border-t border-gray-200 dark:border-gray-800 flex items-center gap-2">
         <input
           type="text"
