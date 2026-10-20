@@ -25,11 +25,12 @@ export default function ClassroomPage({ classroom, onBack }) {
   const [isStageCollapsed, setIsStageCollapsed] = useState(false);
   const [isVideoGridCollapsed, setIsVideoGridCollapsed] = useState(false);
 
-  // AV State
+  // AV State & Media Streams
   const [isMicOn, setIsMicOn] = useState(false);
   const [isCamOn, setIsCamOn] = useState(false);
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [areAllMuted, setAreAllMuted] = useState(false);
+  const [localStream, setLocalStream] = useState(null);
 
   // Attendance & Presence State
   const [attendanceModalOpen, setAttendanceModalOpen] = useState(false);
@@ -42,14 +43,22 @@ export default function ClassroomPage({ classroom, onBack }) {
   const [participants, setParticipants] = useState([
     { id: "p1", name: "Ananya", avatar: "https://api.dicebear.com/7.x/bottts/svg?seed=Ananya", isCameraOn: false, isMuted: true, isHandRaised: false },
     { id: "p2", name: "Rohan", avatar: "https://api.dicebear.com/7.x/bottts/svg?seed=Rohan", isCameraOn: true, isMuted: true, isHandRaised: true },
-    { id: "p3", name: user?.name || "You", avatar: user?.avatar, isCameraOn: isCamOn, isMuted: !isMicOn, isHandRaised: isHandRaised, isSelf: true },
+    { id: "p3", name: user?.name || "You", avatar: user?.avatar, isCameraOn: false, isMuted: true, isHandRaised: false, isSelf: true },
   ]);
+
+  // Clean-up media stream on unmount
+  useEffect(() => {
+    return () => {
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [localStream]);
 
   // Record Attendance & Setup Presence Channel
   useEffect(() => {
     if (!classroom?.id || !user) return;
 
-    // 1. Record entry in class_attendance table
     const logEntry = async () => {
       await supabase.from("class_attendance").insert([
         {
@@ -74,7 +83,6 @@ export default function ClassroomPage({ classroom, onBack }) {
 
     logEntry();
 
-    // 2. Real-time Presence Tracker
     const presenceRoom = supabase.channel(`presence_${classroom.id}`, {
       config: { presence: { key: user.name } },
     });
@@ -126,6 +134,53 @@ export default function ClassroomPage({ classroom, onBack }) {
     const nextState = !areAllMuted;
     setAreAllMuted(nextState);
     setParticipants((prev) => prev.map((p) => ({ ...p, isMuted: nextState })));
+  };
+
+  // Real Camera & Mic Stream Handlers
+  const handleToggleCam = async () => {
+    if (!isCamOn) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+          audio: true,
+        });
+
+        stream.getAudioTracks().forEach((track) => (track.enabled = isMicOn));
+
+        setLocalStream(stream);
+        setIsCamOn(true);
+
+        setParticipants((prev) =>
+          prev.map((p) => (p.isSelf ? { ...p, isCameraOn: true, mediaStream: stream } : p))
+        );
+      } catch (err) {
+        console.error("Camera access denied or error:", err);
+        alert("Camera permission denied. Please allow camera access in browser.");
+      }
+    } else {
+      if (localStream) {
+        localStream.getVideoTracks().forEach((track) => track.stop());
+      }
+      setIsCamOn(false);
+      setParticipants((prev) =>
+        prev.map((p) => (p.isSelf ? { ...p, isCameraOn: false } : p))
+      );
+    }
+  };
+
+  const handleToggleMic = () => {
+    const nextMicState = !isMicOn;
+    setIsMicOn(nextMicState);
+
+    if (localStream) {
+      localStream.getAudioTracks().forEach((track) => {
+        track.enabled = nextMicState;
+      });
+    }
+
+    setParticipants((prev) =>
+      prev.map((p) => (p.isSelf ? { ...p, isMuted: !nextMicState } : p))
+    );
   };
 
   return (
@@ -214,7 +269,12 @@ export default function ClassroomPage({ classroom, onBack }) {
 
           {!isVideoGridCollapsed && (
             <ScrollingGrid
-              teacherInfo={{ name: "Lead Educator", avatar: "https://api.dicebear.com/7.x/bottts/svg?seed=Host" }}
+              teacherInfo={{ 
+                name: isTeacher ? user?.name : "Lead Educator", 
+                avatar: isTeacher ? user?.avatar : "https://api.dicebear.com/7.x/bottts/svg?seed=Host" 
+              }}
+              teacherStream={isTeacher ? localStream : null}
+              isTeacherCamOn={isTeacher ? isCamOn : false}
               participants={participants}
               onToggleMute={handleToggleMute}
             />
@@ -225,8 +285,8 @@ export default function ClassroomPage({ classroom, onBack }) {
             isCamOn={isCamOn}
             isHandRaised={isHandRaised}
             areAllMuted={areAllMuted}
-            onToggleMic={() => setIsMicOn(!isMicOn)}
-            onToggleCam={() => setIsCamOn(!isCamOn)}
+            onToggleMic={handleToggleMic}
+            onToggleCam={handleToggleCam}
             onToggleHand={() => setIsHandRaised(!isHandRaised)}
             onToggleMuteAll={handleToggleMuteAll}
           />

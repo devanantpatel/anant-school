@@ -1,20 +1,27 @@
-import React from "react";
+import React, { useRef, useEffect } from "react";
 import { Mic, MicOff, Hand, VideoOff } from "lucide-react";
 
 export default function StudentTile({ participant, isTeacherView = false, onToggleMute }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current && participant.mediaStream) {
+      videoRef.current.srcObject = participant.mediaStream;
+    }
+  }, [participant.mediaStream, participant.isCameraOn]);
+
   return (
     <div className="relative w-36 h-28 sm:w-44 sm:h-32 bg-gray-900 rounded-xl overflow-hidden border border-gray-800 shadow-md shrink-0 flex flex-col items-center justify-center group">
       
-      {/* Video or Avatar Placeholder */}
-      {participant.isCameraOn ? (
-        <div className="w-full h-full bg-slate-800 flex items-center justify-center text-xs text-gray-400">
-          <video
-            autoPlay
-            playsInline
-            muted={participant.isSelf}
-            className="w-full h-full object-cover -scale-x-100"
-          />
-        </div>
+      {/* Video Stream or Avatar Fallback */}
+      {participant.isCameraOn && participant.mediaStream ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={participant.isSelf}
+          className="w-full h-full object-cover -scale-x-100"
+        />
       ) : (
         <div className="flex flex-col items-center">
           <img
@@ -23,7 +30,7 @@ export default function StudentTile({ participant, isTeacherView = false, onTogg
             className="w-10 h-10 rounded-full border border-gray-700 bg-gray-800 p-0.5"
           />
           <span className="text-[10px] text-gray-500 mt-1 flex items-center gap-1">
-            <VideoOff className="w-2.5 h-2.5" /> Off
+            <VideoOff className="w-2.5 h-2.5" /> Camera Off
           </span>
         </div>
       )}
@@ -57,7 +64,7 @@ export default function StudentTile({ participant, isTeacherView = false, onTogg
         </div>
       </div>
 
-      {/* Teacher Action Overlay on Hover */}
+      {/* Host Mute Overlay */}
       {isTeacherView && !participant.isSelf && (
         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-2 transition">
           <button
